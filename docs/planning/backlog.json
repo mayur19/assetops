@@ -1,0 +1,1050 @@
+{
+  "project": "assetops",
+  "ticketPrefix": "AO",
+  "milestones": [
+    {
+      "id": "M0",
+      "title": "M0: Foundation",
+      "description": "Monorepo, launcher, authentication, tenancy, audit, roles, seed and engineering documentation."
+    },
+    {
+      "id": "M1",
+      "title": "M1: Facilities and assets",
+      "description": "Facility registry and hierarchy, site access, asset registry, attachments and CSV import (FR-01, FR-02)."
+    },
+    {
+      "id": "M2",
+      "title": "M2: Work orders and SLA",
+      "description": "Work-order lifecycle, assignment, technician execution, checklists, labor and the SLA engine (FR-03, FR-04, FR-05)."
+    },
+    {
+      "id": "M3",
+      "title": "M3: Preventive maintenance, inventory and approvals",
+      "description": "Background worker, PM generation, stock ledger, part requests and repair approvals (FR-06, FR-07, FR-08)."
+    },
+    {
+      "id": "M4",
+      "title": "M4: Insights, notifications and administration",
+      "description": "Cost model, dashboard, reports, notifications, audit viewer and organization settings (FR-09, FR-10)."
+    },
+    {
+      "id": "M5",
+      "title": "M5: Acceptance and hardening",
+      "description": "Playwright acceptance suite for PRD §9, security review, accessibility and polish."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "AO-001",
+      "title": "Set up monorepo, launcher and CI",
+      "milestone": "M0",
+      "prdRefs": ["PRD §2"],
+      "adrRefs": ["ADR-0002", "ADR-0010"],
+      "estimateHours": 3,
+      "status": "done",
+      "dependsOn": [],
+      "labels": ["devops"],
+      "description": "Create the npm-workspaces monorepo (api, web, shared), the single run.sh launcher and the GitHub Actions pipeline. A fresh clone must reach a running app with one command.",
+      "acceptanceCriteria": [
+        "./run.sh on a fresh clone installs, migrates, seeds and launches API and web",
+        "CI runs lint, format check, typecheck, tests with coverage and build",
+        "gitleaks secret scan runs on every push"
+      ]
+    },
+    {
+      "id": "AO-002",
+      "title": "Implement session authentication with CSRF and rate limiting",
+      "milestone": "M0",
+      "prdRefs": ["PRD §2", "PRD §3"],
+      "adrRefs": ["ADR-0005"],
+      "estimateHours": 3,
+      "status": "done",
+      "dependsOn": ["AO-001"],
+      "labels": ["backend", "security"],
+      "description": "Local email/password sign-in with scrypt hashes, server-side sessions in PostgreSQL, HTTP-only SameSite cookies, origin checks plus HMAC CSRF tokens, and rate limiting on login.",
+      "acceptanceCriteria": [
+        "Passwords are hashed with scrypt and a unique salt",
+        "Session tokens are stored only as SHA-256 hashes",
+        "Unsafe requests without a valid CSRF token are rejected with 403",
+        "Login failures return one generic message"
+      ]
+    },
+    {
+      "id": "AO-003",
+      "title": "Provide migration runner, audit trail and health checks",
+      "milestone": "M0",
+      "prdRefs": ["FR-10", "PRD §2"],
+      "adrRefs": ["ADR-0004", "ADR-0008"],
+      "estimateHours": 2,
+      "status": "done",
+      "dependsOn": ["AO-001"],
+      "labels": ["backend", "database"],
+      "description": "Forward-only SQL migrations with checksums, an append-only audit_events table written in the same transaction as business changes, and liveness/readiness endpoints.",
+      "acceptanceCriteria": [
+        "Editing an applied migration aborts startup",
+        "Readiness returns 503 when PostgreSQL is unreachable",
+        "Audit writer accepts a transaction client"
+      ]
+    },
+    {
+      "id": "AO-004",
+      "title": "Introduce AssetOps roles and permission matrix",
+      "milestone": "M0",
+      "prdRefs": ["PRD §3", "A-01"],
+      "adrRefs": ["ADR-0007"],
+      "estimateHours": 2,
+      "status": "done",
+      "dependsOn": ["AO-002"],
+      "labels": ["backend", "security"],
+      "description": "Replace the placeholder roles with Organization Admin, Facility Manager, Technician and Requester; add a shared permission matrix used by API guards and the UI; constrain users.role in migration 0002.",
+      "acceptanceCriteria": [
+        "users.role rejects values outside the four PRD roles",
+        "requirePermission guards return 403 for roles without the permission",
+        "Navigation visibility is derived from the same role lists"
+      ]
+    },
+    {
+      "id": "AO-005",
+      "title": "Seed development organizations, users and facilities",
+      "milestone": "M0",
+      "prdRefs": ["PRD §8"],
+      "adrRefs": ["ADR-0009"],
+      "estimateHours": 2,
+      "status": "done",
+      "dependsOn": ["AO-004"],
+      "labels": ["database"],
+      "description": "Idempotent development-only seed with Riverside Hospitality and Northline Fitness, one demo user per role in the primary organization, an admin in the secondary organization and two facilities each.",
+      "acceptanceCriteria": [
+        "Seed refuses to run when NODE_ENV=production",
+        "Re-running the seed does not duplicate rows",
+        "Every demo login is documented in README"
+      ]
+    },
+    {
+      "id": "AO-006",
+      "title": "Write engineering documentation, ADRs and API contract",
+      "milestone": "M0",
+      "prdRefs": ["PRD §1-§12"],
+      "adrRefs": ["ADR-0001"],
+      "estimateHours": 4,
+      "status": "done",
+      "dependsOn": [],
+      "labels": ["docs"],
+      "description": "Architecture overview, system design, data model, OpenAPI 3.1 contract, threat model, test strategy, runbook, roadmap, backlog and ADRs 0001-0017.",
+      "acceptanceCriteria": [
+        "Every PRD §7 endpoint appears in openapi.yaml with x-status and x-ticket",
+        "Every FR and acceptance test maps to at least one ticket",
+        "backlog.json and backlog.md list the same tickets"
+      ]
+    },
+    {
+      "id": "AO-007",
+      "title": "Support multi-organization memberships and active-organization resolution",
+      "milestone": "M0",
+      "prdRefs": ["PRD §3", "PRD §6"],
+      "adrRefs": ["ADR-0003", "ADR-0005"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-004"],
+      "labels": ["backend", "database", "security"],
+      "description": "Introduce the memberships table so one user can belong to several organizations, store the active organization on the session and resolve it on every request. Replaces the single users.organization_id link.",
+      "acceptanceCriteria": [
+        "A user with two memberships can switch organization via POST /organizations/switch",
+        "Switching to an organization without an active membership returns 403",
+        "All existing tenant queries keep using the session organization",
+        "Membership changes are audited"
+      ]
+    },
+    {
+      "id": "AO-008",
+      "title": "Build organization and site switcher",
+      "milestone": "M0",
+      "prdRefs": ["PRD §4 screen 2"],
+      "adrRefs": ["ADR-0003"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-007", "AO-014"],
+      "labels": ["frontend", "ux"],
+      "description": "Top-bar switcher listing the user's active memberships and granted sites; switching reloads tenant-scoped data.",
+      "acceptanceCriteria": [
+        "Only organizations with an active membership are listed",
+        "Switching organization clears cached tenant data",
+        "Site filter persists for the session"
+      ]
+    },
+    {
+      "id": "AO-009",
+      "title": "Load the full PRD §8 demonstration dataset",
+      "milestone": "M0",
+      "prdRefs": ["PRD §8", "A-13"],
+      "adrRefs": ["ADR-0009"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-015", "AO-023", "AO-039", "AO-042", "AO-046"],
+      "labels": ["database"],
+      "description": "Extend the seed with areas, 120 assets, 6 technicians, 45 work orders across statuses, 15 parts, 5 schedules, breached SLAs and the named scenarios (AC breakdown, generator service today, pump repair awaiting approval, low-stock filter, overdue order).",
+      "acceptanceCriteria": [
+        "Riverside has 2 properties with 3 areas each and 120 assets",
+        "Each named scenario is reachable from the UI after ./run.sh reset --yes",
+        "Northline data is fully independent"
+      ]
+    },
+    {
+      "id": "AO-010",
+      "title": "Build facilities list, create and get API",
+      "milestone": "M1",
+      "prdRefs": ["FR-01", "A-02"],
+      "adrRefs": ["ADR-0003", "ADR-0006", "ADR-0007"],
+      "estimateHours": 4,
+      "status": "done",
+      "dependsOn": ["AO-004"],
+      "labels": ["backend", "database", "security"],
+      "description": "Tenant-scoped facilities CRUD slice: zod schemas, repository, service and routes with pagination, search, role gate for creation, unique per-organization codes and an audit event in the same transaction.",
+      "acceptanceCriteria": [
+        "GET /facilities returns only the caller's organization with page metadata",
+        "POST /facilities is 403 for technicians and requesters",
+        "Duplicate code in the same organization returns 409",
+        "Another organization's facility id returns 404"
+      ]
+    },
+    {
+      "id": "AO-011",
+      "title": "Build facilities list and create screen",
+      "milestone": "M1",
+      "prdRefs": ["FR-01", "PRD §4 screen 4"],
+      "adrRefs": ["ADR-0006"],
+      "estimateHours": 3,
+      "status": "done",
+      "dependsOn": ["AO-010"],
+      "labels": ["frontend"],
+      "description": "Facilities screen with server-side pagination and search, loading/empty/error states, and a validated create form shown only to roles with facility:create.",
+      "acceptanceCriteria": [
+        "List renders data from the API with pagination controls",
+        "Create form validates with the shared schema before submitting",
+        "Technicians and requesters do not see the create form"
+      ]
+    },
+    {
+      "id": "AO-012",
+      "title": "Update and archive facilities with reference guard",
+      "milestone": "M1",
+      "prdRefs": ["FR-01"],
+      "adrRefs": ["ADR-0003", "ADR-0008"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-010", "AO-015", "AO-023"],
+      "labels": ["backend", "database"],
+      "description": "PATCH /facilities/:id with optimistic locking via version, soft-delete through archived_at, and a guard that blocks archiving while active assets or open work orders reference the facility.",
+      "acceptanceCriteria": [
+        "Stale version returns 409",
+        "Archiving a facility with active assets returns 409 with a reason",
+        "Updates and archives write before/after audit events"
+      ]
+    },
+    {
+      "id": "AO-013",
+      "title": "Manage the site-building-area hierarchy",
+      "milestone": "M1",
+      "prdRefs": ["FR-01", "PRD §4 screen 4"],
+      "adrRefs": ["ADR-0003"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-010"],
+      "labels": ["backend", "frontend", "database"],
+      "description": "Areas table with parent_area_id up to three levels, API under /facilities/:id/areas and a tree editor on the facilities screen.",
+      "acceptanceCriteria": [
+        "A fourth nesting level is rejected with 422",
+        "Areas cannot reference a facility of another organization",
+        "Tree editor supports add, rename and archive"
+      ]
+    },
+    {
+      "id": "AO-014",
+      "title": "Restrict non-admin users to granted sites",
+      "milestone": "M1",
+      "prdRefs": ["FR-01", "PRD §3"],
+      "adrRefs": ["ADR-0003", "ADR-0007"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-007", "AO-010"],
+      "labels": ["backend", "security", "database"],
+      "description": "Site-access grants per membership; all facility, asset and work-order queries for non-admins are filtered to granted sites while org admins see every site.",
+      "acceptanceCriteria": [
+        "A manager without a grant gets 404 for that site's records",
+        "Org admins see all sites without grants",
+        "Grant changes are audited"
+      ]
+    },
+    {
+      "id": "AO-015",
+      "title": "Implement asset registry API",
+      "milestone": "M1",
+      "prdRefs": ["FR-02", "A-02"],
+      "adrRefs": ["ADR-0003", "ADR-0006"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-013"],
+      "labels": ["backend", "database"],
+      "description": "Assets table and list/create/get/patch endpoints with organization-scoped unique codes, money in minor units, search by code/name/serial and filters by site, criticality and status.",
+      "acceptanceCriteria": [
+        "Asset codes are unique per organization",
+        "purchase cost is stored as integer minor units",
+        "Cross-organization asset ids return 404 (A-02)",
+        "Filters and pagination run server-side"
+      ]
+    },
+    {
+      "id": "AO-016",
+      "title": "Build searchable assets table",
+      "milestone": "M1",
+      "prdRefs": ["FR-02", "PRD §4 screen 5"],
+      "adrRefs": ["ADR-0006"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-015"],
+      "labels": ["frontend"],
+      "description": "Assets table with server-side search, site/criticality/status filters, pagination and an entry point to CSV import.",
+      "acceptanceCriteria": [
+        "Filters are reflected in the URL",
+        "Empty and loading states are shown",
+        "Requesters cannot reach the screen"
+      ]
+    },
+    {
+      "id": "AO-017",
+      "title": "Build asset create and edit form",
+      "milestone": "M1",
+      "prdRefs": ["FR-02", "PRD §4 screen 6"],
+      "adrRefs": ["ADR-0006"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-015"],
+      "labels": ["frontend"],
+      "description": "Form for asset details including site/area, warranty expiry, criticality and purchase cost entered in major units and sent as minor units.",
+      "acceptanceCriteria": [
+        "Validation messages come from the shared schema",
+        "Cost input converts to integer minor units",
+        "Optimistic-lock conflicts show a reload prompt"
+      ]
+    },
+    {
+      "id": "AO-018",
+      "title": "Build asset detail with history and cost",
+      "milestone": "M1",
+      "prdRefs": ["FR-02", "PRD §4 screen 7", "A-11"],
+      "adrRefs": ["ADR-0016"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-015", "AO-048"],
+      "labels": ["frontend", "backend"],
+      "description": "Asset detail page with lifecycle timeline, maintenance history, attachments, repair count, recorded maintenance cost and last service date derived from authoritative records.",
+      "acceptanceCriteria": [
+        "Repair count and cost are computed from work orders and ledger rows, not stored counters",
+        "Completed work orders appear in history after closure (A-11)"
+      ]
+    },
+    {
+      "id": "AO-019",
+      "title": "Import assets from CSV with preview",
+      "milestone": "M1",
+      "prdRefs": ["FR-02", "A-12"],
+      "adrRefs": ["ADR-0006"],
+      "estimateHours": 6,
+      "status": "pending",
+      "dependsOn": ["AO-015"],
+      "labels": ["backend", "frontend"],
+      "description": "Two-step CSV import: preview with row-by-row validation (including duplicates in file and in database) and an all-or-nothing commit keyed by asset code for safe re-import.",
+      "acceptanceCriteria": [
+        "Preview lists every invalid or duplicate row with a reason",
+        "Commit runs in one transaction; any error leaves data unchanged (A-12)",
+        "Re-importing the same file updates rather than duplicates"
+      ]
+    },
+    {
+      "id": "AO-020",
+      "title": "Store attachments safely on local disk",
+      "milestone": "M1",
+      "prdRefs": ["FR-02", "FR-03", "A-14"],
+      "adrRefs": ["ADR-0011"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-010"],
+      "labels": ["backend", "security"],
+      "description": "Multipart upload with MIME allowlist verified by magic bytes, size limit, generated filenames, path traversal protection and tenant-checked download.",
+      "acceptanceCriteria": [
+        "Executables and oversized files are rejected with 422 (A-14)",
+        "Stored filenames are random and never derived from user input",
+        "Downloads verify organization ownership"
+      ]
+    },
+    {
+      "id": "AO-021",
+      "title": "Implement work-order state machine domain",
+      "milestone": "M2",
+      "prdRefs": ["FR-03", "FR-04", "A-05", "A-08"],
+      "adrRefs": ["ADR-0013"],
+      "estimateHours": 4,
+      "status": "done",
+      "dependsOn": ["AO-004"],
+      "labels": ["backend", "testing"],
+      "description": "Pure, immutable state machine for the PRD lifecycle with per-role guards, assignee rules, required-checklist and resolution gates, approval gate, no self-approval on closure and locking of closed orders.",
+      "acceptanceCriteria": [
+        "Every edge outside the lifecycle returns INVALID_TRANSITION",
+        "Completion with an open required checklist item returns CHECKLIST_INCOMPLETE (A-05)",
+        "Resuming from AWAITING_APPROVAL without a decision returns APPROVAL_REQUIRED (A-08)",
+        "The assignee cannot close their own work",
+        "100% branch coverage"
+      ]
+    },
+    {
+      "id": "AO-022",
+      "title": "Implement SLA calculator domain",
+      "milestone": "M2",
+      "prdRefs": ["FR-05", "A-10"],
+      "adrRefs": ["ADR-0014"],
+      "estimateHours": 3,
+      "status": "done",
+      "dependsOn": ["AO-021"],
+      "labels": ["backend", "testing"],
+      "description": "Pure SLA functions: site-over-default policy resolution, elapsed-clock due dates, response/resolution evaluation (pending, at risk, met, breached) and deduplicated escalation keys.",
+      "acceptanceCriteria": [
+        "Response stops at the first accepted technician action, not assignment",
+        "Resolution stops at COMPLETED",
+        "At-risk triggers at 80% of budget; breach strictly after due time",
+        "Escalations already sent are not re-emitted (A-10)",
+        "100% branch coverage"
+      ]
+    },
+    {
+      "id": "AO-023",
+      "title": "Create, list and read work orders",
+      "milestone": "M2",
+      "prdRefs": ["FR-03", "A-02", "A-03"],
+      "adrRefs": ["ADR-0003", "ADR-0013", "ADR-0014"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-015", "AO-022"],
+      "labels": ["backend", "database"],
+      "description": "Work orders table with per-organization sequential codes, creation that computes SLA due dates from policy, list with status/priority/assignee/SLA filters and record-level visibility (requesters see their own).",
+      "acceptanceCriteria": [
+        "Created orders get a unique code like WO-000123 (A-03)",
+        "Requesters only see orders they requested",
+        "Cross-organization ids return 404",
+        "response_due_at and resolve_due_at are stored in UTC"
+      ]
+    },
+    {
+      "id": "AO-024",
+      "title": "Expose transition endpoint with optimistic locking",
+      "milestone": "M2",
+      "prdRefs": ["FR-03", "A-05", "A-08"],
+      "adrRefs": ["ADR-0013", "ADR-0008"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-023", "AO-021"],
+      "labels": ["backend", "database"],
+      "description": "POST /work-orders/:id/transition loads the order and checklist, applies the domain state machine, persists with a version check and writes work_order_events plus audit in one transaction.",
+      "acceptanceCriteria": [
+        "Domain errors map to 409 INVALID_STATE_TRANSITION or 403 with the domain code",
+        "Concurrent transitions with the same version: exactly one succeeds",
+        "Event and audit rows commit atomically with the status change"
+      ]
+    },
+    {
+      "id": "AO-025",
+      "title": "Assign and reassign technicians",
+      "milestone": "M2",
+      "prdRefs": ["FR-03", "A-04"],
+      "adrRefs": ["ADR-0013"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-024"],
+      "labels": ["backend"],
+      "description": "Assignment endpoint that validates the assignee is an active technician in the same organization, records assigned time and keeps reassignment history.",
+      "acceptanceCriteria": [
+        "Assigning a user from another organization returns 422",
+        "Reassignment history is preserved as events",
+        "Assignee receives an in-app notification (A-04)"
+      ]
+    },
+    {
+      "id": "AO-026",
+      "title": "Complete checklist items",
+      "milestone": "M2",
+      "prdRefs": ["FR-04", "A-05"],
+      "adrRefs": ["ADR-0013"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-024"],
+      "labels": ["backend"],
+      "description": "Checklist items snapshot on the order; assignee or manager can complete an item; completion is blocked once the order is closed.",
+      "acceptanceCriteria": [
+        "Completing an item records completed_by and completed_at",
+        "Items on CLOSED orders cannot change (ORDER_LOCKED)"
+      ]
+    },
+    {
+      "id": "AO-027",
+      "title": "Record immutable labor entries with corrections",
+      "milestone": "M2",
+      "prdRefs": ["FR-04", "FR-09"],
+      "adrRefs": ["ADR-0013"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-024"],
+      "labels": ["backend", "database"],
+      "description": "Labor entries with signed minutes and a captured hourly-rate snapshot; corrections are new negative/positive entries, never updates.",
+      "acceptanceCriteria": [
+        "There is no UPDATE path for labor entries",
+        "Corrections reference the original entry",
+        "Labor on closed orders is rejected"
+      ]
+    },
+    {
+      "id": "AO-028",
+      "title": "Build work orders board",
+      "milestone": "M2",
+      "prdRefs": ["FR-03", "PRD §4 screen 8"],
+      "adrRefs": ["ADR-0014"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-023"],
+      "labels": ["frontend"],
+      "description": "Board/table of work orders with status, priority, assignee and SLA badge filters, all server-side.",
+      "acceptanceCriteria": [
+        "SLA badges use the server-computed state",
+        "Filters and pagination are server-side"
+      ]
+    },
+    {
+      "id": "AO-029",
+      "title": "Build work-order request form",
+      "milestone": "M2",
+      "prdRefs": ["FR-03", "PRD §4 screen 9", "A-03"],
+      "adrRefs": ["ADR-0011"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-023", "AO-020"],
+      "labels": ["frontend"],
+      "description": "Request form with site, optional asset, fault description, priority and photo attachments; optimized to finish in under two minutes.",
+      "acceptanceCriteria": [
+        "Requester can submit a broken-AC report and see its code after reload (A-03)",
+        "Photo uploads show progress and validation errors"
+      ]
+    },
+    {
+      "id": "AO-030",
+      "title": "Build work-order detail view",
+      "milestone": "M2",
+      "prdRefs": ["FR-03", "FR-04", "PRD §4 screen 10"],
+      "adrRefs": ["ADR-0013"],
+      "estimateHours": 6,
+      "status": "pending",
+      "dependsOn": ["AO-024", "AO-025", "AO-026", "AO-027"],
+      "labels": ["frontend"],
+      "description": "Detail page with timeline, assignment, checklist, labor, parts, approvals and transition buttons driven by allowed targets.",
+      "acceptanceCriteria": [
+        "Only transitions allowed for the current status are offered",
+        "Domain errors are shown as actionable messages",
+        "Printer-friendly variant available (FR-09)"
+      ]
+    },
+    {
+      "id": "AO-031",
+      "title": "Build technician My Work queue",
+      "milestone": "M2",
+      "prdRefs": ["FR-04", "PRD §4 screen 11"],
+      "adrRefs": ["ADR-0014"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-023"],
+      "labels": ["frontend", "ux"],
+      "description": "Narrow-screen queue of the technician's assigned work sorted by priority and SLA urgency with status and facility filters.",
+      "acceptanceCriteria": ["Sorted by priority then SLA remaining time", "Usable at 360px width"]
+    },
+    {
+      "id": "AO-032",
+      "title": "Create follow-up orders and capture cancellation reasons",
+      "milestone": "M2",
+      "prdRefs": ["FR-03"],
+      "adrRefs": ["ADR-0013"],
+      "estimateHours": 2,
+      "status": "pending",
+      "dependsOn": ["AO-024"],
+      "labels": ["backend"],
+      "description": "Reopening a closed order creates a new linked order (parent_order_id) instead of mutating history; cancellation stores the reason.",
+      "acceptanceCriteria": [
+        "Follow-up order references the original",
+        "Original closed order is unchanged"
+      ]
+    },
+    {
+      "id": "AO-033",
+      "title": "Configure SLA policies and overdue queue",
+      "milestone": "M2",
+      "prdRefs": ["FR-05", "PRD §4 screen 16"],
+      "adrRefs": ["ADR-0014"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-023"],
+      "labels": ["backend", "frontend"],
+      "description": "SLA policy table per priority with optional site override, API to read/replace policies and a screen with the overdue queue and the elapsed-clock policy explained.",
+      "acceptanceCriteria": [
+        "Policies validate resolution >= response",
+        "Site-specific overrides take precedence",
+        "Overdue queue lists breached orders server-side"
+      ]
+    },
+    {
+      "id": "AO-034",
+      "title": "Escalate SLA risk and breaches from the worker",
+      "milestone": "M2",
+      "prdRefs": ["FR-05", "FR-10", "A-10"],
+      "adrRefs": ["ADR-0014", "ADR-0012"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-036", "AO-052", "AO-022"],
+      "labels": ["backend"],
+      "description": "Worker tick evaluates open orders, emits at-risk (80%) and breach notifications using dedupe keys with a unique constraint.",
+      "acceptanceCriteria": [
+        "Running the tick twice creates no duplicate alerts (A-10)",
+        "Breached orders show a breached badge"
+      ]
+    },
+    {
+      "id": "AO-035",
+      "title": "Configure closure verification policy",
+      "milestone": "M2",
+      "prdRefs": ["FR-03"],
+      "adrRefs": ["ADR-0013"],
+      "estimateHours": 2,
+      "status": "pending",
+      "dependsOn": ["AO-024"],
+      "labels": ["backend"],
+      "description": "Organization setting selecting manager verification or requester acceptance for closure, passed to the state machine context.",
+      "acceptanceCriteria": ["Policy change is audited", "Closure obeys the configured policy"]
+    },
+    {
+      "id": "AO-036",
+      "title": "Add background worker tick infrastructure",
+      "milestone": "M3",
+      "prdRefs": ["FR-06", "PRD §2"],
+      "adrRefs": ["ADR-0012", "ADR-0015"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-003"],
+      "labels": ["backend", "devops"],
+      "description": "In-process interval worker with advisory-lock leader election, structured logs and a manual trigger for development.",
+      "acceptanceCriteria": [
+        "Only one tick runs at a time across processes",
+        "Tick failures are logged and do not crash the API"
+      ]
+    },
+    {
+      "id": "AO-037",
+      "title": "Manage maintenance templates",
+      "milestone": "M3",
+      "prdRefs": ["FR-06"],
+      "adrRefs": ["ADR-0015"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-015"],
+      "labels": ["backend"],
+      "description": "Templates with category or asset target, checklist items, expected minutes, default priority and versioning.",
+      "acceptanceCriteria": ["Editing a template bumps its version and affects future work only"]
+    },
+    {
+      "id": "AO-038",
+      "title": "Manage schedules and recurrence calculation",
+      "milestone": "M3",
+      "prdRefs": ["FR-06"],
+      "adrRefs": ["ADR-0015"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-037"],
+      "labels": ["backend", "testing"],
+      "description": "Daily/weekly/monthly schedules in the facility's local time zone with a pure next-occurrence function covering month-end and DST edges.",
+      "acceptanceCriteria": [
+        "Monthly on the 31st falls back to the last day of shorter months",
+        "Next due date is computed in the schedule time zone",
+        "Unit tests cover recurrence edges"
+      ]
+    },
+    {
+      "id": "AO-039",
+      "title": "Generate due preventive work idempotently",
+      "milestone": "M3",
+      "prdRefs": ["FR-06", "A-09"],
+      "adrRefs": ["ADR-0015"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-036", "AO-038", "AO-023"],
+      "labels": ["backend", "database"],
+      "description": "Worker and POST /maintenance/run-due create one order per (schedule_id, occurrence_date) using INSERT ... ON CONFLICT DO NOTHING, snapshot the checklist and advance next_local_date.",
+      "acceptanceCriteria": [
+        "Triggering generation twice yields exactly one order per occurrence (A-09)",
+        "Generated orders keep checklist snapshots after template edits"
+      ]
+    },
+    {
+      "id": "AO-040",
+      "title": "Build preventive maintenance and calendar screens",
+      "milestone": "M3",
+      "prdRefs": ["FR-06", "PRD §4 screens 12-13"],
+      "adrRefs": ["ADR-0015"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-039"],
+      "labels": ["frontend"],
+      "description": "Template and schedule management plus a calendar of future occurrences and overdue scheduled work.",
+      "acceptanceCriteria": [
+        "Calendar shows future occurrences without creating them",
+        "Overdue scheduled work is highlighted"
+      ]
+    },
+    {
+      "id": "AO-041",
+      "title": "Manage parts catalogue and balances",
+      "milestone": "M3",
+      "prdRefs": ["FR-07"],
+      "adrRefs": ["ADR-0016"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-010"],
+      "labels": ["backend", "database"],
+      "description": "Parts with organization-unique SKU, unit, reorder point and unit cost in minor units; per-facility balances.",
+      "acceptanceCriteria": [
+        "SKU unique per organization",
+        "Technicians receive parts without unit cost fields"
+      ]
+    },
+    {
+      "id": "AO-042",
+      "title": "Record stock movements in an append-only ledger",
+      "milestone": "M3",
+      "prdRefs": ["FR-07", "A-06", "A-07"],
+      "adrRefs": ["ADR-0016"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-041"],
+      "labels": ["backend", "database", "testing"],
+      "description": "RECEIPT/ISSUE/RETURN/ADJUSTMENT movements with a balance update in the same transaction using a conditional update that never allows negative stock.",
+      "acceptanceCriteria": [
+        "Issuing 2 of 3 leaves 1 and records an ISSUE row (A-06)",
+        "Concurrent over-issue: exactly one succeeds, stock never negative (A-07)",
+        "Ledger rows are never updated or deleted"
+      ]
+    },
+    {
+      "id": "AO-043",
+      "title": "Request and issue parts for work orders",
+      "milestone": "M3",
+      "prdRefs": ["FR-07", "FR-04"],
+      "adrRefs": ["ADR-0016", "ADR-0017"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-042", "AO-024"],
+      "labels": ["backend"],
+      "description": "Technician part requests, manager approval where required, and stock consumption only on issue linked to the work order.",
+      "acceptanceCriteria": [
+        "Requesting a part does not change stock",
+        "Issuing consumes stock and captures unit cost snapshot"
+      ]
+    },
+    {
+      "id": "AO-044",
+      "title": "Build inventory and ledger screens",
+      "milestone": "M3",
+      "prdRefs": ["FR-07", "PRD §4 screen 14"],
+      "adrRefs": ["ADR-0016"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-042"],
+      "labels": ["frontend"],
+      "description": "Parts list with per-site balances, ledger history and a low-stock view; pricing hidden for technicians.",
+      "acceptanceCriteria": [
+        "Low-stock filter lists parts at or below reorder point",
+        "Technicians never see unit cost"
+      ]
+    },
+    {
+      "id": "AO-045",
+      "title": "Implement repair approval policy domain",
+      "milestone": "M3",
+      "prdRefs": ["FR-08", "A-08"],
+      "adrRefs": ["ADR-0017"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-021"],
+      "labels": ["backend", "testing"],
+      "description": "Pure functions deciding whether an estimate needs approval (amount_minor > organization threshold), forbidding self-approval and duplicate active approvals per decision context.",
+      "acceptanceCriteria": [
+        "Estimates above threshold require approval; equal-to-threshold does not",
+        "Requester cannot approve own request",
+        "Second active request for the same context is rejected"
+      ]
+    },
+    {
+      "id": "AO-046",
+      "title": "Build approvals API",
+      "milestone": "M3",
+      "prdRefs": ["FR-08", "A-08"],
+      "adrRefs": ["ADR-0017", "ADR-0008"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-045", "AO-024"],
+      "labels": ["backend", "database"],
+      "description": "Approval requests from work orders, inbox listing and decide endpoint with partial unique index for one active request per context; decisions notify and audit.",
+      "acceptanceCriteria": [
+        "Work stays blocked until an authorized decision (A-08)",
+        "Rejected requests remain visible and audited",
+        "Deciding twice returns 409"
+      ]
+    },
+    {
+      "id": "AO-047",
+      "title": "Build approval inbox",
+      "milestone": "M3",
+      "prdRefs": ["FR-08", "PRD §4 screen 15"],
+      "adrRefs": ["ADR-0017"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-046"],
+      "labels": ["frontend"],
+      "description": "Inbox and request detail with estimate, justification, history and approve/reject with comment.",
+      "acceptanceCriteria": [
+        "Approver cannot act on their own requests (button hidden and API rejects)"
+      ]
+    },
+    {
+      "id": "AO-048",
+      "title": "Implement work-order cost computation",
+      "milestone": "M4",
+      "prdRefs": ["FR-09", "A-11"],
+      "adrRefs": ["ADR-0016"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-027", "AO-042"],
+      "labels": ["backend", "testing"],
+      "description": "Pure cost function: labor_minutes x hourly rate / 60 + sum(issued qty x captured unit cost) in integer minor units with explicit incomplete flags for missing rates.",
+      "acceptanceCriteria": [
+        "Rounding is half-up to the minor unit",
+        "Missing rates produce an 'incomplete' flag, never zero",
+        "Unit tests cover mixed labor and parts"
+      ]
+    },
+    {
+      "id": "AO-049",
+      "title": "Build operations report and CSV export API",
+      "milestone": "M4",
+      "prdRefs": ["FR-09", "A-15"],
+      "adrRefs": ["ADR-0006"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-048", "AO-023"],
+      "labels": ["backend"],
+      "description": "Aggregations for cards and charts with date/site filters and a CSV export that applies the same filters and authorization.",
+      "acceptanceCriteria": [
+        "Export rows equal the filtered report rows (A-15)",
+        "CSV cells are escaped against formula injection"
+      ]
+    },
+    {
+      "id": "AO-050",
+      "title": "Build operations dashboard",
+      "milestone": "M4",
+      "prdRefs": ["FR-09", "PRD §4 screen 3", "A-11"],
+      "adrRefs": ["ADR-0006"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-049"],
+      "labels": ["frontend"],
+      "description": "Dashboard cards for open, overdue, completed this month, low stock and response SLA compliance plus recent activity.",
+      "acceptanceCriteria": [
+        "All values come from the API; no hard-coded KPIs",
+        "Completing and closing an order updates the cards (A-11)"
+      ]
+    },
+    {
+      "id": "AO-051",
+      "title": "Build reports screen with charts",
+      "milestone": "M4",
+      "prdRefs": ["FR-09", "PRD §4 screen 17"],
+      "adrRefs": ["ADR-0006"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-049"],
+      "labels": ["frontend"],
+      "description": "Charts for orders by priority/status/site, spend trend, most repaired assets and labor by technician, with filters and CSV export.",
+      "acceptanceCriteria": [
+        "Charts render without external CDNs",
+        "Incomplete cost data is labelled as estimate"
+      ]
+    },
+    {
+      "id": "AO-052",
+      "title": "Build notifications API",
+      "milestone": "M4",
+      "prdRefs": ["FR-10", "A-10"],
+      "adrRefs": ["ADR-0012"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-023"],
+      "labels": ["backend", "database"],
+      "description": "Persistent in-app notifications with unread count and mark-as-read, scoped to the signed-in user and organization.",
+      "acceptanceCriteria": [
+        "Notifications survive server restart (A-13)",
+        "Users cannot read others' notifications (404)"
+      ]
+    },
+    {
+      "id": "AO-053",
+      "title": "Build notifications center",
+      "milestone": "M4",
+      "prdRefs": ["FR-10", "PRD §4 screen 19"],
+      "adrRefs": ["ADR-0012"],
+      "estimateHours": 2,
+      "status": "pending",
+      "dependsOn": ["AO-052"],
+      "labels": ["frontend"],
+      "description": "Notification list with unread badge in the top bar and mark-as-read.",
+      "acceptanceCriteria": ["Unread badge updates after marking as read"]
+    },
+    {
+      "id": "AO-054",
+      "title": "Build audit log API and viewer",
+      "milestone": "M4",
+      "prdRefs": ["FR-10"],
+      "adrRefs": ["ADR-0008"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-003"],
+      "labels": ["backend", "frontend"],
+      "description": "Read-only, filterable audit log for admins and managers with no edit or delete paths.",
+      "acceptanceCriteria": [
+        "Technicians and requesters receive 403",
+        "No API route modifies audit events"
+      ]
+    },
+    {
+      "id": "AO-055",
+      "title": "Build users, roles and organization settings",
+      "milestone": "M4",
+      "prdRefs": ["PRD §3", "PRD §4 screen 18"],
+      "adrRefs": ["ADR-0007", "ADR-0017"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-007"],
+      "labels": ["backend", "frontend", "security"],
+      "description": "Org admins manage users and roles, approval threshold, closure policy, labor rate and currency; managers cannot change security settings.",
+      "acceptanceCriteria": [
+        "Facility managers receive 403 on settings endpoints",
+        "Role changes are audited",
+        "Approval threshold stored in minor units"
+      ]
+    },
+    {
+      "id": "AO-056",
+      "title": "Automate role and tenant isolation acceptance tests",
+      "milestone": "M5",
+      "prdRefs": ["A-01", "A-02", "A-13"],
+      "adrRefs": ["ADR-0010"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-015", "AO-009"],
+      "labels": ["testing"],
+      "description": "Playwright specs signing in as all four roles, probing cross-organization ids and verifying persistence after reload and API restart.",
+      "acceptanceCriteria": [
+        "A-01, A-02 and A-13 pass against the real database",
+        "Specs are repeatable after ./run.sh reset --yes"
+      ]
+    },
+    {
+      "id": "AO-057",
+      "title": "Automate work-order lifecycle acceptance tests",
+      "milestone": "M5",
+      "prdRefs": ["A-03", "A-04", "A-05", "A-11"],
+      "adrRefs": ["ADR-0010"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-030", "AO-050"],
+      "labels": ["testing"],
+      "description": "Playwright specs covering request creation, assignment, checklist gate and completion through closure with dashboard updates.",
+      "acceptanceCriteria": ["A-03, A-04, A-05 and A-11 pass"]
+    },
+    {
+      "id": "AO-058",
+      "title": "Automate inventory, approval, PM and SLA acceptance tests",
+      "milestone": "M5",
+      "prdRefs": ["A-06", "A-07", "A-08", "A-09", "A-10"],
+      "adrRefs": ["ADR-0010"],
+      "estimateHours": 5,
+      "status": "pending",
+      "dependsOn": ["AO-043", "AO-046", "AO-039", "AO-034"],
+      "labels": ["testing"],
+      "description": "Playwright and API-level specs for stock issue, concurrent over-issue, approval blocking, idempotent generation and SLA alerts.",
+      "acceptanceCriteria": ["A-06 through A-10 pass", "Concurrency test issues parallel requests"]
+    },
+    {
+      "id": "AO-059",
+      "title": "Automate import, upload and export acceptance tests",
+      "milestone": "M5",
+      "prdRefs": ["A-12", "A-14", "A-15"],
+      "adrRefs": ["ADR-0010"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-019", "AO-020", "AO-049"],
+      "labels": ["testing"],
+      "description": "Specs for CSV preview with bad rows, rejected executable/oversized uploads and filtered CSV export parity.",
+      "acceptanceCriteria": ["A-12, A-14 and A-15 pass"]
+    },
+    {
+      "id": "AO-060",
+      "title": "Run security hardening review",
+      "milestone": "M5",
+      "prdRefs": ["PRD §3", "PRD §11"],
+      "adrRefs": ["ADR-0005", "ADR-0008"],
+      "estimateHours": 3,
+      "status": "pending",
+      "dependsOn": ["AO-046", "AO-020"],
+      "labels": ["security"],
+      "description": "ASVS L2 checklist review, dependency audit, CSP for the web build and verification that every route has authentication and object-level checks.",
+      "acceptanceCriteria": [
+        "Threat model mitigations updated to implemented",
+        "No high or critical npm audit findings"
+      ]
+    },
+    {
+      "id": "AO-061",
+      "title": "Polish accessibility, responsiveness and states",
+      "milestone": "M5",
+      "prdRefs": ["PRD §4", "PRD §11"],
+      "adrRefs": ["ADR-0010"],
+      "estimateHours": 4,
+      "status": "pending",
+      "dependsOn": ["AO-050", "AO-030"],
+      "labels": ["frontend", "ux"],
+      "description": "WCAG 2.1 AA pass, keyboard navigation, focus management in dialogs, skeletons, empty states and confirmation dialogs.",
+      "acceptanceCriteria": [
+        "axe scan reports no serious violations on core screens",
+        "Critical flows work at 360px width"
+      ]
+    },
+    {
+      "id": "AO-062",
+      "title": "Add demo-account selector to sign-in",
+      "milestone": "M5",
+      "prdRefs": ["PRD §4 screen 1", "PRD §8"],
+      "adrRefs": ["ADR-0009"],
+      "estimateHours": 2,
+      "status": "pending",
+      "dependsOn": ["AO-009"],
+      "labels": ["frontend"],
+      "description": "Development-only selector that fills a demo identity on the login page; absent in production builds.",
+      "acceptanceCriteria": [
+        "Selector hidden when NODE_ENV=production",
+        "Lists one identity per role"
+      ]
+    }
+  ]
+}

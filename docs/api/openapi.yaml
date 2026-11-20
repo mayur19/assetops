@@ -1,0 +1,3012 @@
+openapi: 3.1.0
+info:
+  title: AssetOps API
+  version: 0.1.0
+  summary: Facility and maintenance management API.
+  description: |
+    HTTP contract for AssetOps. Every route is mounted under `/api/v1`
+    (PRD §7 lists the same paths without the version segment).
+
+    Each operation carries:
+    - `x-status`: `implemented` (live today) or `pending` (registered, answers
+      `501 NOT_IMPLEMENTED` with `error.details.ticket`).
+    - `x-ticket`: backlog ticket in `docs/planning/backlog.md`.
+    - `x-roles`: roles allowed by the API permission matrix (ADR-0007). Record-level
+      rules (own requests, assigned work, same organization) are enforced in services.
+
+    All responses use the envelope `{ success, data, error, meta? }` (ADR-0006).
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://localhost:5171/api/v1
+    description: Local web dev server (Vite proxies /api to the API)
+  - url: http://localhost:4101/api/v1
+    description: Local API process
+tags:
+  - name: Health
+    description: Liveness and readiness probes (mounted at /api/health, outside /v1).
+  - name: Auth
+    description: Session authentication and CSRF token issuance.
+  - name: Facilities
+    description: Organization-scoped facilities and area hierarchy (FR-01).
+  - name: Assets
+    description: Asset registry and CSV import (FR-02).
+  - name: Work orders
+    description: Corrective work orders, transitions and technician execution (FR-03, FR-04).
+  - name: Maintenance
+    description: Preventive maintenance templates, schedules and generation (FR-06).
+  - name: Parts
+    description: Parts catalogue and append-only stock ledger (FR-07).
+  - name: Approvals
+    description: Repair approval inbox and decisions (FR-08).
+  - name: Reports
+    description: Operational reporting and CSV export (FR-09).
+  - name: Notifications
+    description: In-app notifications (FR-10).
+  - name: Audit
+    description: Read-only audit log (FR-10).
+  - name: SLA
+    description: SLA policy configuration (FR-05).
+  - name: Organizations
+    description: Memberships, organization switching, users and settings (PRD §3).
+  - name: Attachments
+    description: Local-disk attachments (ADR-0011).
+
+security:
+  - sessionCookie: []
+
+paths:
+  /health/live:
+    servers:
+      - url: http://localhost:4101/api
+    get:
+      tags: [Health]
+      operationId: getLiveness
+      summary: Liveness probe (never touches dependencies)
+      security: []
+      x-status: implemented
+      x-ticket: AO-003
+      x-roles: [public]
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOk'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /health/ready:
+    servers:
+      - url: http://localhost:4101/api
+    get:
+      tags: [Health]
+      operationId: getReadiness
+      summary: Readiness probe (checks PostgreSQL)
+      security: []
+      x-status: implemented
+      x-ticket: AO-003
+      x-roles: [public]
+      responses:
+        '200':
+          $ref: '#/components/responses/HealthOk'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Sign in with email and password
+      description: Sets the HTTP-only `sid` cookie and returns the CSRF token for later unsafe requests. Rate limited.
+      security: []
+      x-status: implemented
+      x-ticket: AO-002
+      x-roles: [public]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Signed in.
+          headers:
+            Set-Cookie:
+              description: Session cookie (`HttpOnly; SameSite=Lax`, `Secure` in production).
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/CsrfFailed'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /auth/session:
+    get:
+      tags: [Auth]
+      operationId: getSession
+      summary: Current session user and a fresh CSRF token
+      x-status: implemented
+      x-ticket: AO-002
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      responses:
+        '200':
+          description: Active session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: End the current session
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: implemented
+      x-ticket: AO-002
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      responses:
+        '200':
+          description: Signed out; cookie cleared.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          loggedOut:
+                            type: boolean
+                            const: true
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/CsrfFailed'
+  /me:
+    get:
+      tags: [Auth]
+      operationId: getMe
+      summary: Signed-in user (PRD `GET /api/auth/me`)
+      x-status: implemented
+      x-ticket: AO-002
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      responses:
+        '200':
+          description: Session user.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SessionUser'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+
+  /facilities:
+    get:
+      tags: [Facilities]
+      operationId: listFacilities
+      summary: List facilities in the caller's organization
+      x-status: implemented
+      x-ticket: AO-010
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: q
+          in: query
+          description: Case-insensitive search on code or name; wildcards are matched literally.
+          schema:
+            type: string
+            maxLength: 100
+        - name: includeArchived
+          in: query
+          schema:
+            type: string
+            enum: ['true', 'false']
+            default: 'false'
+      responses:
+        '200':
+          description: Page of facilities ordered by name.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    required: [meta]
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Facility'
+                      meta:
+                        $ref: '#/components/schemas/PageMeta'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+    post:
+      tags: [Facilities]
+      operationId: createFacility
+      summary: Create a facility
+      description: Writes a `facility.created` audit event in the same transaction.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: implemented
+      x-ticket: AO-010
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateFacilityInput'
+      responses:
+        '201':
+          $ref: '#/components/responses/FacilityOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+  /facilities/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Facilities]
+      operationId: getFacility
+      summary: Get a facility by id
+      description: Unknown ids, malformed ids and ids owned by another organization all return 404.
+      x-status: implemented
+      x-ticket: AO-010
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      responses:
+        '200':
+          $ref: '#/components/responses/FacilityOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Facilities]
+      operationId: updateFacility
+      summary: Update or archive a facility (optimistic locking)
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-012
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateFacilityInput'
+      responses:
+        '200':
+          $ref: '#/components/responses/FacilityOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /facilities/{id}/areas:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Facilities]
+      operationId: listAreas
+      summary: Area hierarchy of a facility
+      x-status: pending
+      x-ticket: AO-013
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      responses:
+        '200':
+          description: Areas (up to three levels).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Area'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Facilities]
+      operationId: createArea
+      summary: Add an area to a facility
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-013
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAreaInput'
+      responses:
+        '201':
+          description: Area created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Area'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /assets:
+    get:
+      tags: [Assets]
+      operationId: listAssets
+      summary: Search and filter assets
+      x-status: pending
+      x-ticket: AO-015
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: q
+          in: query
+          description: Search asset code, name or serial number.
+          schema:
+            type: string
+        - name: facilityId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: criticality
+          in: query
+          schema:
+            $ref: '#/components/schemas/Criticality'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/AssetStatus'
+      responses:
+        '200':
+          description: Page of assets.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Asset'
+                      meta:
+                        $ref: '#/components/schemas/PageMeta'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Assets]
+      operationId: createAsset
+      summary: Register an asset
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-015
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetInput'
+      responses:
+        '201':
+          $ref: '#/components/responses/AssetOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /assets/import:
+    post:
+      tags: [Assets]
+      operationId: importAssets
+      summary: Preview or commit a CSV asset import
+      description: '`mode=preview` validates row by row without writing; `mode=commit` applies all rows in one transaction keyed by asset code.'
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-019
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      parameters:
+        - name: mode
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [preview, commit]
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema:
+              type: string
+      responses:
+        '200':
+          description: Import report.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ImportReport'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /assets/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Assets]
+      operationId: getAsset
+      summary: Get an asset with derived maintenance metrics
+      x-status: pending
+      x-ticket: AO-015
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN]
+      responses:
+        '200':
+          $ref: '#/components/responses/AssetOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    patch:
+      tags: [Assets]
+      operationId: updateAsset
+      summary: Update an asset (optimistic locking)
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-015
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/AssetInput'
+                - $ref: '#/components/schemas/VersionedInput'
+      responses:
+        '200':
+          $ref: '#/components/responses/AssetOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /work-orders:
+    get:
+      tags: [Work orders]
+      operationId: listWorkOrders
+      summary: List work orders (requesters see only their own)
+      x-status: pending
+      x-ticket: AO-023
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/WorkOrderStatus'
+        - name: priority
+          in: query
+          schema:
+            $ref: '#/components/schemas/Priority'
+        - name: assigneeId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: facilityId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: sla
+          in: query
+          schema:
+            $ref: '#/components/schemas/SlaClockState'
+      responses:
+        '200':
+          description: Page of work orders.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/WorkOrder'
+                      meta:
+                        $ref: '#/components/schemas/PageMeta'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Work orders]
+      operationId: createWorkOrder
+      summary: File a maintenance request
+      description: Generates an organization-scoped code and computes SLA due dates from policy.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-023
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWorkOrderInput'
+      responses:
+        '201':
+          $ref: '#/components/responses/WorkOrderOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /work-orders/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Work orders]
+      operationId: getWorkOrder
+      summary: Work order detail with timeline, checklist, labor and SLA evaluation
+      x-status: pending
+      x-ticket: AO-023
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      responses:
+        '200':
+          $ref: '#/components/responses/WorkOrderOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /work-orders/{id}/transition:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Work orders]
+      operationId: transitionWorkOrder
+      summary: Change work-order status
+      description: |
+        Applies the domain state machine (ADR-0013). Actor rules are enforced by the
+        domain, not a role gate: domain codes `ROLE_NOT_PERMITTED`, `NOT_ASSIGNEE` and
+        `SELF_APPROVAL` map to 403; `INVALID_TRANSITION`, `ORDER_LOCKED`,
+        `CHECKLIST_INCOMPLETE`, `RESOLUTION_REQUIRED`, `REASON_REQUIRED`,
+        `ASSIGNEE_REQUIRED` and `APPROVAL_REQUIRED` map to 409 `INVALID_STATE_TRANSITION`
+        with `details.reason`.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-024
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/WorkOrderOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/InvalidTransition'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /work-orders/{id}/assign:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Work orders]
+      operationId: assignWorkOrder
+      summary: Assign or reassign a technician
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-025
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assigneeId, version]
+              properties:
+                assigneeId:
+                  type: string
+                  format: uuid
+                version:
+                  type: integer
+                  minimum: 1
+                note:
+                  type: string
+                  maxLength: 1000
+      responses:
+        '200':
+          $ref: '#/components/responses/WorkOrderOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /work-orders/{id}/checklist/{itemId}/complete:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+      - name: itemId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      tags: [Work orders]
+      operationId: completeChecklistItem
+      summary: Mark a checklist item complete
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-026
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN]
+      responses:
+        '200':
+          description: Updated checklist item.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ChecklistItem'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/InvalidTransition'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /work-orders/{id}/labor:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Work orders]
+      operationId: addLaborEntry
+      summary: Record an immutable labor entry (or a correction)
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-027
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LaborEntryInput'
+      responses:
+        '201':
+          description: Labor entry recorded.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LaborEntry'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/InvalidTransition'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /work-orders/{id}/follow-up:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Work orders]
+      operationId: createFollowUpOrder
+      summary: Reopen a closed order as a new linked follow-up order
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-032
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 1000
+      responses:
+        '201':
+          $ref: '#/components/responses/WorkOrderOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /work-orders/{id}/part-requests:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Work orders]
+      operationId: requestPart
+      summary: Request a part for a work order (stock is consumed on issue, not request)
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-043
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [partId, requestedQty]
+              properties:
+                partId:
+                  type: string
+                  format: uuid
+                requestedQty:
+                  type: integer
+                  minimum: 1
+      responses:
+        '201':
+          description: Part request created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PartRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /work-orders/{id}/approval-requests:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Work orders]
+      operationId: requestApproval
+      summary: Request approval for spend above the organization threshold
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-046
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amountMinor, rationale]
+              properties:
+                amountMinor:
+                  type: integer
+                  minimum: 1
+                  description: Estimated spend in minor currency units.
+                rationale:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+      responses:
+        '201':
+          $ref: '#/components/responses/ApprovalOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /maintenance/templates:
+    get:
+      tags: [Maintenance]
+      operationId: listMaintenanceTemplates
+      summary: List preventive maintenance templates
+      x-status: pending
+      x-ticket: AO-037
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      responses:
+        '200':
+          description: Templates.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/MaintenanceTemplate'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Maintenance]
+      operationId: createMaintenanceTemplate
+      summary: Create a template
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-037
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaintenanceTemplateInput'
+      responses:
+        '201':
+          description: Template created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MaintenanceTemplate'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /maintenance/schedules:
+    get:
+      tags: [Maintenance]
+      operationId: listMaintenanceSchedules
+      summary: List schedules with next due dates
+      x-status: pending
+      x-ticket: AO-038
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      responses:
+        '200':
+          description: Schedules.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/MaintenanceSchedule'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Maintenance]
+      operationId: createMaintenanceSchedule
+      summary: Create a schedule
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-038
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaintenanceScheduleInput'
+      responses:
+        '201':
+          description: Schedule created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MaintenanceSchedule'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /maintenance/run-due:
+    post:
+      tags: [Maintenance]
+      operationId: runDueMaintenance
+      summary: Generate due preventive work now (idempotent)
+      description: Creates at most one work order per `(schedule_id, occurrence_date)`; repeated calls create nothing new (A-09).
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-039
+      x-roles: [ORG_ADMIN]
+      responses:
+        '200':
+          description: Generation summary.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          generated:
+                            type: integer
+                          skippedExisting:
+                            type: integer
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /parts:
+    get:
+      tags: [Parts]
+      operationId: listParts
+      summary: List parts with per-facility balances (unit cost hidden from technicians)
+      x-status: pending
+      x-ticket: AO-041
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: lowStock
+          in: query
+          schema:
+            type: string
+            enum: ['true', 'false']
+      responses:
+        '200':
+          description: Page of parts.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Part'
+                      meta:
+                        $ref: '#/components/schemas/PageMeta'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Parts]
+      operationId: createPart
+      summary: Add a part to the catalogue
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-041
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PartInput'
+      responses:
+        '201':
+          description: Part created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Part'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /parts/{id}/movements:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Parts]
+      operationId: listStockMovements
+      summary: Stock ledger for a part
+      x-status: pending
+      x-ticket: AO-042
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Ledger rows, newest first.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/StockMovement'
+                      meta:
+                        $ref: '#/components/schemas/PageMeta'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Parts]
+      operationId: recordStockMovement
+      summary: Append a stock movement (balance updated in the same transaction)
+      description: Issues that would make stock negative return 409; concurrent over-issue lets exactly one request succeed (A-07).
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-042
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StockMovementInput'
+      responses:
+        '201':
+          description: Movement recorded.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StockMovement'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /approvals:
+    get:
+      tags: [Approvals]
+      operationId: listApprovals
+      summary: Approval inbox
+      x-status: pending
+      x-ticket: AO-046
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/ApprovalStatus'
+      responses:
+        '200':
+          description: Page of approval requests.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ApprovalRequest'
+                      meta:
+                        $ref: '#/components/schemas/PageMeta'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /approvals/{id}/decide:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Approvals]
+      operationId: decideApproval
+      summary: Approve or reject (requester cannot decide own request)
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-046
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision:
+                  type: string
+                  enum: [APPROVED, REJECTED]
+                comment:
+                  type: string
+                  maxLength: 2000
+      responses:
+        '200':
+          $ref: '#/components/responses/ApprovalOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /reports/operations:
+    get:
+      tags: [Reports]
+      operationId: getOperationsReport
+      summary: Dashboard cards and chart series
+      x-status: pending
+      x-ticket: AO-049
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/FacilityFilter'
+      responses:
+        '200':
+          description: Report.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OperationsReport'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /reports/export.csv:
+    get:
+      tags: [Reports]
+      operationId: exportReportCsv
+      summary: Export the filtered report as CSV (same filters and authorization)
+      x-status: pending
+      x-ticket: AO-049
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      parameters:
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - $ref: '#/components/parameters/FacilityFilter'
+      responses:
+        '200':
+          description: CSV file; cells beginning with = + - @ are escaped.
+          content:
+            text/csv:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      operationId: listNotifications
+      summary: Notifications for the signed-in user
+      x-status: pending
+      x-ticket: AO-052
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of notifications.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Notification'
+                      meta:
+                        $ref: '#/components/schemas/PageMeta'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /notifications/unread-count:
+    get:
+      tags: [Notifications]
+      operationId: getUnreadNotificationCount
+      summary: Unread notification count
+      x-status: pending
+      x-ticket: AO-052
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      responses:
+        '200':
+          description: Count.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          unread:
+                            type: integer
+                            minimum: 0
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /notifications/{id}/read:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    post:
+      tags: [Notifications]
+      operationId: markNotificationRead
+      summary: Mark a notification as read
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-052
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      responses:
+        '200':
+          description: Updated notification.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Notification'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /audit-logs:
+    get:
+      tags: [Audit]
+      operationId: listAuditLogs
+      summary: Read-only audit log
+      x-status: pending
+      x-ticket: AO-054
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - name: entityType
+          in: query
+          schema:
+            type: string
+        - name: entityId
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+      responses:
+        '200':
+          description: Page of audit events.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AuditEvent'
+                      meta:
+                        $ref: '#/components/schemas/PageMeta'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /sla-policies:
+    get:
+      tags: [SLA]
+      operationId: listSlaPolicies
+      summary: SLA policies by priority and optional site
+      x-status: pending
+      x-ticket: AO-033
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      responses:
+        '200':
+          description: Policies.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SlaPolicy'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    put:
+      tags: [SLA]
+      operationId: replaceSlaPolicies
+      summary: Replace the organization's SLA policy set
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-033
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/SlaPolicy'
+      responses:
+        '200':
+          description: Stored policies.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SlaPolicy'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /organizations/memberships:
+    get:
+      tags: [Organizations]
+      operationId: listMemberships
+      summary: Active memberships of the signed-in user
+      x-status: pending
+      x-ticket: AO-007
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      responses:
+        '200':
+          description: Memberships.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Membership'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /organizations/switch:
+    post:
+      tags: [Organizations]
+      operationId: switchOrganization
+      summary: Switch the session's active organization
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-007
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organizationId]
+              properties:
+                organizationId:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: New session context.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /organizations/current/settings:
+    get:
+      tags: [Organizations]
+      operationId: getOrganizationSettings
+      summary: Organization settings
+      x-status: pending
+      x-ticket: AO-055
+      x-roles: [ORG_ADMIN]
+      responses:
+        '200':
+          $ref: '#/components/responses/SettingsOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    patch:
+      tags: [Organizations]
+      operationId: updateOrganizationSettings
+      summary: Update organization settings
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-055
+      x-roles: [ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizationSettings'
+      responses:
+        '200':
+          $ref: '#/components/responses/SettingsOk'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /organizations/current/users:
+    get:
+      tags: [Organizations]
+      operationId: listOrganizationUsers
+      summary: Users and roles in the organization
+      x-status: pending
+      x-ticket: AO-055
+      x-roles: [ORG_ADMIN]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of members.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SessionUser'
+                      meta:
+                        $ref: '#/components/schemas/PageMeta'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      tags: [Organizations]
+      operationId: inviteOrganizationUser
+      summary: Add a user to the organization with a role
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-055
+      x-roles: [ORG_ADMIN]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, displayName, role]
+              properties:
+                email:
+                  type: string
+                  format: email
+                displayName:
+                  type: string
+                  maxLength: 200
+                role:
+                  $ref: '#/components/schemas/Role'
+      responses:
+        '201':
+          description: Member added.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SessionUser'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+  /attachments:
+    post:
+      tags: [Attachments]
+      operationId: uploadAttachment
+      summary: Upload an attachment (MIME allowlist, size limit)
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      x-status: pending
+      x-ticket: AO-020
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, entityType, entityId]
+              properties:
+                file:
+                  type: string
+                  contentMediaType: application/octet-stream
+                entityType:
+                  type: string
+                  enum: [asset, work_order]
+                entityId:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Stored attachment metadata.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiSuccessBase'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Attachment'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /attachments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Attachments]
+      operationId: downloadAttachment
+      summary: Download an attachment (organization ownership verified)
+      x-status: pending
+      x-ticket: AO-020
+      x-roles: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+      responses:
+        '200':
+          description: 'File content with Content-Disposition attachment.'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                contentMediaType: application/octet-stream
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: sid
+      description: HTTP-only, SameSite=Lax session cookie set by POST /auth/login (ADR-0005).
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: HMAC of the session token returned by /auth/login and /auth/session. Required on authenticated unsafe methods; Origin must also match APP_ORIGIN.
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      description: Resource UUID. Malformed or foreign ids return 404.
+      schema:
+        type: string
+        format: uuid
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+    From:
+      name: from
+      in: query
+      schema:
+        type: string
+        format: date
+    To:
+      name: to
+      in: query
+      schema:
+        type: string
+        format: date
+    FacilityFilter:
+      name: facilityId
+      in: query
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Client-generated key; a replay with the same key returns the original result (planned, AO-042).
+      schema:
+        type: string
+        maxLength: 128
+
+  responses:
+    HealthOk:
+      description: Healthy.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiSuccessBase'
+              - type: object
+                properties:
+                  data:
+                    type: object
+                    required: [status, version]
+                    properties:
+                      status:
+                        type: string
+                        enum: [ok, ready]
+                      version:
+                        type: string
+    FacilityOk:
+      description: Facility.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiSuccessBase'
+              - type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Facility'
+    AssetOk:
+      description: Asset.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiSuccessBase'
+              - type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Asset'
+    WorkOrderOk:
+      description: Work order.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiSuccessBase'
+              - type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/WorkOrder'
+    ApprovalOk:
+      description: Approval request.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiSuccessBase'
+              - type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ApprovalRequest'
+    SettingsOk:
+      description: Organization settings.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiSuccessBase'
+              - type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/OrganizationSettings'
+    ValidationFailed:
+      description: Request validation failed; `details` lists `{ path, message }` issues.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiFailure'
+          example:
+            success: false
+            data: null
+            error:
+              code: VALIDATION_FAILED
+              message: Request validation failed
+              details:
+                - path: code
+                  message: Use 2-20 letters, digits or dashes
+              requestId: 3f1c2a9e-6b1d-4c39-9a51-0d7f4c2e8b10
+    Unauthenticated:
+      description: No valid session.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiFailure'
+    Forbidden:
+      description: Authenticated but not permitted (role gate or domain actor rule).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiFailure'
+    CsrfFailed:
+      description: Cross-origin request or missing/invalid CSRF token (`CSRF_FAILED`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiFailure'
+    NotFound:
+      description: Resource does not exist in the caller's organization.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiFailure'
+    Conflict:
+      description: Unique constraint, stale version or duplicate active record.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiFailure'
+    InvalidTransition:
+      description: Lifecycle rule rejected the change (`INVALID_STATE_TRANSITION`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiFailure'
+          example:
+            success: false
+            data: null
+            error:
+              code: INVALID_STATE_TRANSITION
+              message: All required checklist items must be completed
+              details:
+                reason: CHECKLIST_INCOMPLETE
+                missingItemIds: [9b2d1c4e-1f0a-4e6b-8f53-2a7c9d0e1b44]
+    RateLimited:
+      description: Too many requests.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiFailure'
+    ServiceUnavailable:
+      description: Dependency unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiFailure'
+    NotImplemented:
+      description: Endpoint is registered but not built yet; `details.ticket` names the backlog item.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiFailure'
+          example:
+            success: false
+            data: null
+            error:
+              code: NOT_IMPLEMENTED
+              message: Not implemented yet (tracked as AO-023)
+              details:
+                ticket: AO-023
+
+  schemas:
+    ErrorCode:
+      type: string
+      enum:
+        - VALIDATION_FAILED
+        - UNAUTHENTICATED
+        - FORBIDDEN
+        - NOT_FOUND
+        - CONFLICT
+        - INVALID_STATE_TRANSITION
+        - RATE_LIMITED
+        - CSRF_FAILED
+        - NOT_IMPLEMENTED
+        - SERVICE_UNAVAILABLE
+        - INTERNAL_ERROR
+    ApiErrorBody:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        message:
+          type: string
+        details: {}
+        requestId:
+          type: string
+    ApiFailure:
+      type: object
+      required: [success, data, error]
+      properties:
+        success:
+          type: boolean
+          const: false
+        data:
+          type: 'null'
+        error:
+          $ref: '#/components/schemas/ApiErrorBody'
+    ApiSuccessBase:
+      type: object
+      required: [success, data, error]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data: {}
+        error:
+          type: 'null'
+        meta:
+          $ref: '#/components/schemas/PageMeta'
+    PageMeta:
+      type: object
+      required: [total, page, limit]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+    VersionedInput:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: integer
+          minimum: 1
+          description: Optimistic-lock version last read by the client.
+    Role:
+      type: string
+      enum: [ORG_ADMIN, FACILITY_MANAGER, TECHNICIAN, REQUESTER]
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        password:
+          type: string
+          minLength: 1
+          maxLength: 256
+    SessionUser:
+      type: object
+      required: [id, organizationId, organizationName, email, displayName, role]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizationId:
+          type: string
+          format: uuid
+        organizationName:
+          type: string
+        email:
+          type: string
+          format: email
+        displayName:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+    SessionEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiSuccessBase'
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [user, csrfToken]
+              properties:
+                user:
+                  $ref: '#/components/schemas/SessionUser'
+                csrfToken:
+                  type: string
+                  minLength: 32
+    Membership:
+      type: object
+      properties:
+        organizationId:
+          type: string
+          format: uuid
+        organizationName:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        active:
+          type: boolean
+
+    CreateFacilityInput:
+      type: object
+      required: [code, name, timezone]
+      properties:
+        code:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9-]{1,19}$'
+          description: Trimmed and upper-cased; unique per organization.
+          examples: [RIV-SPA]
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        address:
+          type: string
+          maxLength: 500
+          default: ''
+        timezone:
+          type: string
+          maxLength: 64
+          description: IANA time zone name.
+          examples: [America/Chicago]
+    UpdateFacilityInput:
+      allOf:
+        - $ref: '#/components/schemas/VersionedInput'
+        - type: object
+          properties:
+            name:
+              type: string
+              minLength: 1
+              maxLength: 200
+            address:
+              type: string
+              maxLength: 500
+            timezone:
+              type: string
+              maxLength: 64
+            archived:
+              type: boolean
+    Facility:
+      type: object
+      required:
+        [
+          id,
+          organizationId,
+          code,
+          name,
+          address,
+          timezone,
+          active,
+          archivedAt,
+          createdAt,
+          updatedAt,
+          version,
+        ]
+      properties:
+        id:
+          type: string
+          format: uuid
+        organizationId:
+          type: string
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        timezone:
+          type: string
+        active:
+          type: boolean
+        archivedAt:
+          type: [string, 'null']
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+    CreateAreaInput:
+      type: object
+      required: [code, name]
+      properties:
+        parentAreaId:
+          type: [string, 'null']
+          format: uuid
+        code:
+          type: string
+          maxLength: 20
+        name:
+          type: string
+          maxLength: 200
+    Area:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        facilityId:
+          type: string
+          format: uuid
+        parentAreaId:
+          type: [string, 'null']
+          format: uuid
+        code:
+          type: string
+        name:
+          type: string
+        depth:
+          type: integer
+          minimum: 1
+          maximum: 3
+
+    Criticality:
+      type: string
+      enum: [LOW, MEDIUM, HIGH, CRITICAL]
+    AssetStatus:
+      type: string
+      enum: [OPERATIONAL, DEGRADED, DOWN, RETIRED]
+    AssetInput:
+      type: object
+      required: [code, name, category, facilityId, criticality, status]
+      properties:
+        code:
+          type: string
+          maxLength: 40
+        name:
+          type: string
+          maxLength: 200
+        category:
+          type: string
+          maxLength: 100
+        make:
+          type: string
+        model:
+          type: string
+        serialNumber:
+          type: string
+        facilityId:
+          type: string
+          format: uuid
+        areaId:
+          type: [string, 'null']
+          format: uuid
+        installedOn:
+          type: [string, 'null']
+          format: date
+        warrantyExpiresOn:
+          type: [string, 'null']
+          format: date
+        criticality:
+          $ref: '#/components/schemas/Criticality'
+        status:
+          $ref: '#/components/schemas/AssetStatus'
+        purchasedCostMinor:
+          type: [integer, 'null']
+          minimum: 0
+          description: Integer minor currency units.
+    Asset:
+      allOf:
+        - $ref: '#/components/schemas/AssetInput'
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            repairCount:
+              type: integer
+            maintenanceCostMinor:
+              type: integer
+            lastServicedAt:
+              type: [string, 'null']
+              format: date-time
+            version:
+              type: integer
+    ImportReport:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [preview, commit]
+        totalRows:
+          type: integer
+        validRows:
+          type: integer
+        created:
+          type: integer
+        updated:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              row:
+                type: integer
+              field:
+                type: string
+              message:
+                type: string
+
+    WorkOrderStatus:
+      type: string
+      enum:
+        [
+          OPEN,
+          TRIAGED,
+          ASSIGNED,
+          IN_PROGRESS,
+          AWAITING_PARTS,
+          AWAITING_APPROVAL,
+          COMPLETED,
+          CLOSED,
+          CANCELLED,
+        ]
+    Priority:
+      type: string
+      enum: [LOW, MEDIUM, HIGH, CRITICAL]
+    SlaClockState:
+      type: string
+      enum: [PENDING, AT_RISK, MET, BREACHED, NOT_APPLICABLE]
+    SlaClock:
+      type: object
+      properties:
+        state:
+          $ref: '#/components/schemas/SlaClockState'
+        dueAt:
+          type: string
+          format: date-time
+        stoppedAt:
+          type: [string, 'null']
+          format: date-time
+        consumedBp:
+          type: integer
+          description: Elapsed share of the budget in basis points.
+        remainingMs:
+          type: integer
+    CreateWorkOrderInput:
+      type: object
+      required: [title, facilityId, priority]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 5000
+        facilityId:
+          type: string
+          format: uuid
+        assetId:
+          type: [string, 'null']
+          format: uuid
+        priority:
+          $ref: '#/components/schemas/Priority'
+        reportedAt:
+          type: string
+          format: date-time
+          description: Incident timestamp; defaults to now.
+        attachmentIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+    ChecklistItem:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sortOrder:
+          type: integer
+        label:
+          type: string
+        required:
+          type: boolean
+        completedBy:
+          type: [string, 'null']
+          format: uuid
+        completedAt:
+          type: [string, 'null']
+          format: date-time
+    WorkOrder:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+          examples: [WO-000123]
+        facilityId:
+          type: string
+          format: uuid
+        assetId:
+          type: [string, 'null']
+          format: uuid
+        requesterId:
+          type: string
+          format: uuid
+        assignedUserId:
+          type: [string, 'null']
+          format: uuid
+        priority:
+          $ref: '#/components/schemas/Priority'
+        status:
+          $ref: '#/components/schemas/WorkOrderStatus'
+        title:
+          type: string
+        description:
+          type: string
+        resolution:
+          type: [string, 'null']
+        reportedAt:
+          type: string
+          format: date-time
+        assignedAt:
+          type: [string, 'null']
+          format: date-time
+        firstRespondedAt:
+          type: [string, 'null']
+          format: date-time
+        completedAt:
+          type: [string, 'null']
+          format: date-time
+        closedAt:
+          type: [string, 'null']
+          format: date-time
+        responseDueAt:
+          type: string
+          format: date-time
+        resolveDueAt:
+          type: string
+          format: date-time
+        sla:
+          type: object
+          properties:
+            response:
+              $ref: '#/components/schemas/SlaClock'
+            resolution:
+              $ref: '#/components/schemas/SlaClock'
+        checklist:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChecklistItem'
+        parentOrderId:
+          type: [string, 'null']
+          format: uuid
+        version:
+          type: integer
+    TransitionRequest:
+      type: object
+      required: [to, version]
+      properties:
+        to:
+          $ref: '#/components/schemas/WorkOrderStatus'
+        version:
+          type: integer
+          minimum: 1
+          description: Optimistic-lock version; a stale version returns 409 CONFLICT.
+        note:
+          type: string
+          maxLength: 2000
+        reason:
+          type: string
+          maxLength: 2000
+          description: Required when `to` is CANCELLED.
+        resolution:
+          type: string
+          maxLength: 5000
+          description: Required when `to` is COMPLETED unless already stored.
+        assigneeId:
+          type: string
+          format: uuid
+          description: Required when `to` is ASSIGNED.
+    LaborEntryInput:
+      type: object
+      required: [minutesSigned]
+      properties:
+        minutesSigned:
+          type: integer
+          minimum: -1440
+          maximum: 1440
+          description: Negative values are corrections of an earlier entry.
+        correctsEntryId:
+          type: [string, 'null']
+          format: uuid
+        note:
+          type: string
+          maxLength: 1000
+    LaborEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        workOrderId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        minutesSigned:
+          type: integer
+        rateMinorSnapshot:
+          type: [integer, 'null']
+        note:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    MaintenanceTemplateInput:
+      type: object
+      required: [name, defaultPriority]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        assetCategory:
+          type: [string, 'null']
+        assetId:
+          type: [string, 'null']
+          format: uuid
+        checklist:
+          type: array
+          items:
+            type: object
+            required: [label, required]
+            properties:
+              label:
+                type: string
+              required:
+                type: boolean
+        estimatedMinutes:
+          type: integer
+          minimum: 0
+        defaultPriority:
+          $ref: '#/components/schemas/Priority'
+        assigneeRole:
+          $ref: '#/components/schemas/Role'
+    MaintenanceTemplate:
+      allOf:
+        - $ref: '#/components/schemas/MaintenanceTemplateInput'
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            version:
+              type: integer
+    MaintenanceScheduleInput:
+      type: object
+      required: [templateId, assetId, frequency, startLocalDate, timezone]
+      properties:
+        templateId:
+          type: string
+          format: uuid
+        assetId:
+          type: string
+          format: uuid
+        frequency:
+          type: string
+          enum: [DAILY, WEEKLY, MONTHLY]
+        startLocalDate:
+          type: string
+          format: date
+        timezone:
+          type: string
+        enabled:
+          type: boolean
+          default: true
+    MaintenanceSchedule:
+      allOf:
+        - $ref: '#/components/schemas/MaintenanceScheduleInput'
+        - type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            nextLocalDate:
+              type: string
+              format: date
+
+    PartInput:
+      type: object
+      required: [sku, name, unit]
+      properties:
+        sku:
+          type: string
+          maxLength: 64
+        name:
+          type: string
+          maxLength: 200
+        unit:
+          type: string
+          maxLength: 20
+        reorderPoint:
+          type: integer
+          minimum: 0
+        unitCostMinor:
+          type: [integer, 'null']
+          minimum: 0
+        preferredSupplier:
+          type: string
+    Part:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        sku:
+          type: string
+        name:
+          type: string
+        unit:
+          type: string
+        reorderPoint:
+          type: integer
+        unitCostMinor:
+          type: [integer, 'null']
+          description: Omitted for roles without inventory:read-pricing.
+        balances:
+          type: array
+          items:
+            type: object
+            properties:
+              facilityId:
+                type: string
+                format: uuid
+              onHandQty:
+                type: integer
+                minimum: 0
+    StockMovementInput:
+      type: object
+      required: [facilityId, movementType, quantity]
+      properties:
+        facilityId:
+          type: string
+          format: uuid
+        movementType:
+          type: string
+          enum: [RECEIPT, ISSUE, RETURN, ADJUSTMENT]
+        quantity:
+          type: integer
+          description: Positive for RECEIPT/ISSUE/RETURN; signed for ADJUSTMENT.
+        workOrderId:
+          type: [string, 'null']
+          format: uuid
+        unitCostMinor:
+          type: [integer, 'null']
+          minimum: 0
+        note:
+          type: string
+    StockMovement:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        partId:
+          type: string
+          format: uuid
+        facilityId:
+          type: string
+          format: uuid
+        workOrderId:
+          type: [string, 'null']
+          format: uuid
+        movementType:
+          type: string
+          enum: [RECEIPT, ISSUE, RETURN, ADJUSTMENT]
+        quantitySigned:
+          type: integer
+        unitCostMinorSnapshot:
+          type: [integer, 'null']
+        actorId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+    PartRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        workOrderId:
+          type: string
+          format: uuid
+        partId:
+          type: string
+          format: uuid
+        requestedQty:
+          type: integer
+        status:
+          type: string
+          enum: [REQUESTED, APPROVED, ISSUED, REJECTED, CANCELLED]
+        requestedBy:
+          type: string
+          format: uuid
+        approvedBy:
+          type: [string, 'null']
+          format: uuid
+
+    ApprovalStatus:
+      type: string
+      enum: [PENDING, APPROVED, REJECTED, WITHDRAWN]
+    ApprovalRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        workOrderId:
+          type: string
+          format: uuid
+        requesterId:
+          type: string
+          format: uuid
+        approverId:
+          type: [string, 'null']
+          format: uuid
+        amountMinor:
+          type: integer
+        status:
+          $ref: '#/components/schemas/ApprovalStatus'
+        rationale:
+          type: string
+        comment:
+          type: [string, 'null']
+        decidedAt:
+          type: [string, 'null']
+          format: date-time
+
+    OperationsReport:
+      type: object
+      properties:
+        cards:
+          type: object
+          properties:
+            openOrders:
+              type: integer
+            overdueOrders:
+              type: integer
+            completedThisMonth:
+              type: integer
+            lowStockParts:
+              type: integer
+            responseSlaComplianceBp:
+              type: integer
+        ordersByStatus:
+          type: array
+          items:
+            type: object
+            properties:
+              status:
+                $ref: '#/components/schemas/WorkOrderStatus'
+              count:
+                type: integer
+        spendTrend:
+          type: array
+          items:
+            type: object
+            properties:
+              month:
+                type: string
+              costMinor:
+                type: integer
+              incomplete:
+                type: boolean
+                description: True when a labor rate or part cost was missing; never treated as zero.
+    Notification:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [ASSIGNMENT, SLA_AT_RISK, SLA_BREACHED, APPROVAL_DECIDED, LOW_STOCK]
+        title:
+          type: string
+        body:
+          type: string
+        readAt:
+          type: [string, 'null']
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    AuditEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+        actorUserId:
+          type: [string, 'null']
+          format: uuid
+        action:
+          type: string
+          examples: [facility.created]
+        entityType:
+          type: string
+        entityId:
+          type: [string, 'null']
+        metadata:
+          type: object
+        requestId:
+          type: [string, 'null']
+        occurredAt:
+          type: string
+          format: date-time
+    SlaPolicy:
+      type: object
+      required: [priority, responseMinutes, resolutionMinutes]
+      properties:
+        priority:
+          $ref: '#/components/schemas/Priority'
+        facilityId:
+          type: [string, 'null']
+          format: uuid
+          description: Null for the organization default.
+        responseMinutes:
+          type: integer
+          minimum: 1
+        resolutionMinutes:
+          type: integer
+          minimum: 1
+    OrganizationSettings:
+      type: object
+      properties:
+        currencyCode:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        timezone:
+          type: string
+        approvalThresholdMinor:
+          type: integer
+          minimum: 0
+        closurePolicy:
+          type: string
+          enum: [MANAGER_VERIFICATION, REQUESTER_ACCEPTANCE]
+        laborRateMinorPerHour:
+          type: [integer, 'null']
+          minimum: 0
+    Attachment:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        entityType:
+          type: string
+        entityId:
+          type: string
+          format: uuid
+        originalName:
+          type: string
+        mimeType:
+          type: string
+        sizeBytes:
+          type: integer
+        uploadedBy:
+          type: string
+          format: uuid
